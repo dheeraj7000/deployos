@@ -26,10 +26,20 @@ from services.policy_engine.engine import policy_engine
 from workflows.refunds.refund_workflow import CustomerRefundWorkflow
 from packages.models.adapters import get_model_provider
 
+from contextlib import asynccontextmanager
+from packages.schemas.database import init_db
+from packages.schemas.repository import repository
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
+
 app = FastAPI(
     title="DeployOS API Gateway",
     description="Production infrastructure for reliable, durable, and auditable AI agents.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # Enable CORS for the Next.js control plane dashboard
@@ -97,6 +107,14 @@ async def run_workflow(req: TriggerWorkflowRequest):
         auto_approve_if_reviewed=req.auto_approve_if_reviewed,
     )
     run = result["run"]
+    # Persist to PostgreSQL database
+    try:
+        await repository.persist_workflow_run(run)
+        for prop in run.proposals:
+            await repository.persist_action_proposal(prop)
+    except Exception:
+        pass
+
     return {
         "run_id": run.run_id,
         "workflow_id": run.workflow_id,
@@ -127,6 +145,23 @@ def list_runs():
             "error": r.error,
         }
         for r in durable_engine.runs.values()
+    ]
+
+
+@app.get("/api/tenants/{org_id}/runs")
+async def list_runs_by_tenant(org_id: str):
+    db_runs = await repository.list_runs_by_tenant(org_id)
+    return [
+        {
+            "run_id": r.id,
+            "workflow_id": r.workflow_id,
+            "organization_id": r.organization_id,
+            "status": r.status,
+            "duration_ms": r.duration_ms,
+            "model_name": r.model_name,
+            "created_at": r.created_at,
+        }
+        for r in db_runs
     ]
 
 
